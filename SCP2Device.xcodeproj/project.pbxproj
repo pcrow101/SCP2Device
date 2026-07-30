@@ -348,7 +348,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.icloud.SCP2Device;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -384,7 +385,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.icloud.SCP2Device;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -449,7 +451,7 @@
 				D657CC5C2F6C4BCF00FC4034 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		D657CC5D2F6C4BCF00FC4034 /* Build configuration list for PBXNativeTarget "SCP2Device" */ = {
 			isa = XCConfigurationList;
@@ -458,7 +460,7 @@
 				D657CC5F2F6C4BCF00FC4034 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		D6AA000B2FA04BCB00FC4034 /* Build configuration list for PBXNativeTarget "SCP2DeviceTests" */ = {
 			isa = XCConfigurationList;
@@ -467,7 +469,7 @@
 				D6AA000D2FA04BCB00FC4034 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};

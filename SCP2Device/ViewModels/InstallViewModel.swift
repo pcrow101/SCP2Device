@@ -31,10 +31,19 @@ final class InstallViewModel {
 
     // MARK: - UI State
 
+    enum ActiveAction { case install, download }
+
     var progressLog: String = ""
     var isRunning: Bool = false
+    /// Which cancellable action is currently in progress (nil when idle).
+    var activeAction: ActiveAction?
     /// Non-nil only while an SCP transfer is active; value is 0–100.
     var transferProgress: Double? = nil
+
+    // MARK: - Cancellation
+
+    private var currentTask: Task<Void, Never>?
+    private var currentProcess: Process?
 
     // MARK: - Services
 
@@ -54,35 +63,81 @@ final class InstallViewModel {
 
     // MARK: - Public Actions
 
-    /// Runs the full install workflow: SCP → FlashApp (if checked) → Reboot (if checked).
+    /// Toggles between starting and cancelling the full install workflow.
     func installBuild() {
+        if isRunning && activeAction == .install {
+            cancelInstall()
+            return
+        }
         guard !isRunning else { return }
         isRunning = true
-        Task { @MainActor [weak self] in
+        activeAction = .install
+        currentTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.isRunning = false }
+            defer {
+                self.isRunning = false
+                self.activeAction = nil
+                self.currentTask = nil
+                self.currentProcess = nil
+            }
             guard self.validateInputs() else { return }
             self.addIPToHistory(self.ipAddress)
             self.addBuildToHistory(self.buildPath)
+
             guard (try? await self.runSCP()) == true else { return }
+            guard !Task.isCancelled else {
+                self.appendLog("\n⚠ Install cancelled by user.\n")
+                return
+            }
+
             guard (try? await self.runFlashApp()) == true else { return }
+            guard !Task.isCancelled else {
+                self.appendLog("\n⚠ Install cancelled by user.\n")
+                return
+            }
+
             try? await self.runReboot()
-            self.appendLog("\n━━━ Done ━━━\n")
+            if !Task.isCancelled {
+                self.appendLog("\n━━━ Done ━━━\n")
+            } else {
+                self.appendLog("\n⚠ Install cancelled by user.\n")
+            }
         }
     }
 
-    /// SCP the build onto the device only.
+    /// Cancels any in-flight install workflow.
+    func cancelInstall() {
+        appendLog("\n⚠ Cancelling…\n")
+        currentProcess?.terminate()
+        currentTask?.cancel()
+    }
+
+    /// Toggles between starting and cancelling an SCP-only transfer.
     func downloadBuild() {
+        if isRunning && activeAction == .download {
+            cancelInstall()
+            return
+        }
         guard !isRunning else { return }
         isRunning = true
-        Task { @MainActor [weak self] in
+        activeAction = .download
+        currentTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.isRunning = false }
+            defer {
+                self.isRunning = false
+                self.activeAction = nil
+                self.currentTask = nil
+                self.currentProcess = nil
+            }
             guard self.validateInputs() else { return }
             self.addIPToHistory(self.ipAddress)
             self.addBuildToHistory(self.buildPath)
             guard (try? await self.runSCP()) == true else { return }
-            self.appendLog("\n━━━ Done ━━━\n")
+            if !Task.isCancelled {
+                self.appendLog("\n━━━ Done ━━━\n")
+            } else {
+                self.appendLog("\n⚠ Transfer cancelled by user.\n")
+            }
         }
     }
 
@@ -131,7 +186,8 @@ final class InstallViewModel {
                 deviceIP: ipAddress,
                 destinationFolder: destinationFolder,
                 onOutput: { [weak self] text in self?.appendLog(text) },
-                onProgress: { [weak self] pct in self?.transferProgress = pct }
+                onProgress: { [weak self] pct in self?.transferProgress = pct },
+                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
             )
             if status != 0 {
                 appendLog("✖ SCP failed with exit code \(status)\n")
@@ -150,12 +206,17 @@ final class InstallViewModel {
     private func runFlashApp() async throws -> Bool {
         appendLog("━━━ Flashing build on device ━━━\n")
         let buildFilename = (buildPath as NSString).lastPathComponent
-        let remotePath = "\(destinationFolder)/\(buildFilename)"
+
+        // Llama devices require the destination folder to end in a space.
+        let isLlama = await detectLlamaDevice()
+        let effectiveDestination = isLlama ? destinationFolder + " " : destinationFolder
+        let remotePath = "\(effectiveDestination)/\(buildFilename)"
         do {
             let status = try await sshService.execute(
                 deviceIP: ipAddress,
                 command: "FlashApp \(remotePath)",
-                onOutput: { [weak self] text in self?.appendLog(text) }
+                onOutput: { [weak self] text in self?.appendLog(text) },
+                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
             )
             if status != 0 {
                 appendLog("✖ FlashApp failed with exit code \(status)\n")
@@ -175,7 +236,8 @@ final class InstallViewModel {
             let status = try await sshService.execute(
                 deviceIP: ipAddress,
                 command: "/sbin/reboot",
-                onOutput: { [weak self] text in self?.appendLog(text) }
+                onOutput: { [weak self] text in self?.appendLog(text) },
+                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
             )
             if status == 0 {
                 appendLog("✔ Reboot command sent.\n")
@@ -189,8 +251,34 @@ final class InstallViewModel {
 
     // MARK: - Helpers
 
-    func validateInputs() -> Bool {
-        if buildPath.isEmpty {
+    /// Queries the device's command prompt / hostname over SSH and returns `true`
+    /// if it contains "llama" (case-insensitive). Llama devices require the flash
+    /// destination folder to end in a trailing space.
+    private func detectLlamaDevice() async -> Bool {
+        appendLog("━━━ Detecting device type ━━━\n")
+
+        // Reference box so the @Sendable output callback can accumulate text.
+        final class OutputBox: @unchecked Sendable { var text = "" }
+        let box = OutputBox()
+
+        _ = try? await sshService.execute(
+            deviceIP: ipAddress,
+            command: "echo \"$PS1\"; hostname; cat /etc/hostname 2>/dev/null",
+            onOutput: { [weak self] text in
+                box.text += text
+                self?.appendLog(text)
+            },
+            onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+        )
+
+        let isLlama = box.text.lowercased().contains("llama")
+        appendLog(isLlama
+            ? "→ Llama device detected — adding trailing space to destination.\n"
+            : "→ Non-Llama device — using destination as-is.\n")
+        return isLlama
+    }
+
+    func validateInputs() -> Bool {        if buildPath.isEmpty {
             appendLog("✖ Error: No build file selected.\n")
             return false
         }

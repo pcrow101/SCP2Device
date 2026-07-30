@@ -10,7 +10,8 @@ struct SCPService: Sendable {
         deviceIP: String,
         destinationFolder: String,
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
-        onProgress: @MainActor @escaping @Sendable (Double?) -> Void
+        onProgress: @MainActor @escaping @Sendable (Double?) -> Void,
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void = { _ in }
     ) async throws -> Int32 {
 
         // Build the scp argument list (will be passed to script)
@@ -18,6 +19,7 @@ struct SCPService: Sendable {
             "/usr/bin/scp",
             "-P", "10022",
             "-O",
+            "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             buildPath,
@@ -34,7 +36,8 @@ struct SCPService: Sendable {
             launchPath: "/usr/bin/script",
             arguments: ["-q", "/dev/null"] + scpArgs,
             onOutput: onOutput,
-            onProgress: onProgress
+            onProgress: onProgress,
+            onProcessStarted: onProcessStarted
         )
     }
 
@@ -44,7 +47,8 @@ struct SCPService: Sendable {
         launchPath: String,
         arguments: [String],
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
-        onProgress: @MainActor @escaping @Sendable (Double?) -> Void
+        onProgress: @MainActor @escaping @Sendable (Double?) -> Void,
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void
     ) async throws -> Int32 {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
@@ -107,6 +111,7 @@ struct SCPService: Sendable {
 
             do {
                 try process.run()
+                Task { @MainActor in onProcessStarted(process) }
             } catch {
                 pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(throwing: error)
