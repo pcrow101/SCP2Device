@@ -22,6 +22,7 @@ struct SCPService: Sendable {
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
             buildPath,
             "root@\(deviceIP):\(destinationFolder)"
         ]

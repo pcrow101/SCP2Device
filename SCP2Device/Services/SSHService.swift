@@ -5,13 +5,17 @@ import Foundation
 struct SSHService: Sendable {
 
     /// Executes a remote command over SSH.
-    /// Always uses: port 10022, StrictHostKeyChecking=no,
-    /// UserKnownHostsFile=/dev/null, and root as the remote user.
+    /// Always uses: port 10022, ConnectTimeout=5, StrictHostKeyChecking=no,
+    /// UserKnownHostsFile=/dev/null, LogLevel=ERROR, and root as the remote user.
+    /// If `stdin` is provided, it is written to the remote command's standard input.
+    /// `onError` (if given) receives stderr; otherwise stderr is sent to `onOutput`.
     @discardableResult
     func execute(
         deviceIP: String,
         command: String,
+        stdin: String? = nil,
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
+        onError: (@MainActor @Sendable (String) -> Void)? = nil,
         onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void = { _ in }
     ) async throws -> Int32 {
 
@@ -20,6 +24,7 @@ struct SSHService: Sendable {
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
             "root@\(deviceIP)",
             command
         ]
@@ -30,7 +35,9 @@ struct SSHService: Sendable {
         return try await runProcess(
             launchPath: "/usr/bin/ssh",
             arguments: arguments,
+            stdin: stdin,
             onOutput: onOutput,
+            onError: onError,
             onProcessStarted: onProcessStarted
         )
     }
@@ -40,7 +47,9 @@ struct SSHService: Sendable {
     private func runProcess(
         launchPath: String,
         arguments: [String],
+        stdin: String?,
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
+        onError: (@MainActor @Sendable (String) -> Void)?,
         onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void
     ) async throws -> Int32 {
         try await withCheckedThrowingContinuation { continuation in
@@ -53,6 +62,10 @@ struct SSHService: Sendable {
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
 
+            // Provide stdin only when needed so normal SSH calls are unaffected.
+            let stdinPipe: Pipe? = stdin != nil ? Pipe() : nil
+            if let stdinPipe { process.standardInput = stdinPipe }
+
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
@@ -62,7 +75,10 @@ struct SSHService: Sendable {
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-                Task { @MainActor in onOutput(text) }
+                // Route stderr to onError when provided, otherwise fall back to onOutput.
+                Task { @MainActor in
+                    if let onError { onError(text) } else { onOutput(text) }
+                }
             }
 
             process.terminationHandler = { proc in
@@ -74,6 +90,13 @@ struct SSHService: Sendable {
             do {
                 try process.run()
                 Task { @MainActor in onProcessStarted(process) }
+
+                // Feed stdin (e.g. the config file contents) then close it.
+                if let stdinPipe, let stdin {
+                    let handle = stdinPipe.fileHandleForWriting
+                    handle.write(Data(stdin.utf8))
+                    try? handle.close()
+                }
             } catch {
                 continuation.resume(throwing: error)
             }

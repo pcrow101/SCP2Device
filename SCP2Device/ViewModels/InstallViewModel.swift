@@ -7,153 +7,172 @@ import SwiftUI
 @Observable
 final class InstallViewModel {
 
-    // MARK: - Persisted User Inputs
+   // MARK: - Persisted User Inputs
 
-    var buildPath: String {
-        didSet { UserDefaults.standard.set(buildPath, forKey: Keys.buildPath) }
-    }
+   var buildPath: String {
+       didSet { UserDefaults.standard.set(buildPath, forKey: Keys.buildPath) }
+   }
 
-    var ipAddress: String {
-        didSet { UserDefaults.standard.set(ipAddress, forKey: Keys.ipAddress) }
-    }
+   var ipAddress: String {
+       didSet { UserDefaults.standard.set(ipAddress, forKey: Keys.ipAddress) }
+   }
 
-    var destinationFolder: String {
-        didSet { UserDefaults.standard.set(destinationFolder, forKey: Keys.destinationFolder) }
-    }
+   var destinationFolder: String {
+       didSet { UserDefaults.standard.set(destinationFolder, forKey: Keys.destinationFolder) }
+   }
 
-    var ipAddressHistory: [String] {
-        didSet { UserDefaults.standard.set(ipAddressHistory, forKey: Keys.ipAddressHistory) }
-    }
+   var ipAddressHistory: [String] {
+       didSet { UserDefaults.standard.set(ipAddressHistory, forKey: Keys.ipAddressHistory) }
+   }
 
-    var buildPathHistory: [String] {
-        didSet { UserDefaults.standard.set(buildPathHistory, forKey: Keys.buildPathHistory) }
-    }
+   var buildPathHistory: [String] {
+       didSet { UserDefaults.standard.set(buildPathHistory, forKey: Keys.buildPathHistory) }
+   }
 
-    // MARK: - UI State
+   var configText: String {
+       didSet { UserDefaults.standard.set(configText, forKey: Keys.configText) }
+   }
 
-    enum ActiveAction { case install, download }
+   var configSnippets: [ConfigSnippet] {
+       didSet {
+           if let data = try? JSONEncoder().encode(configSnippets) {
+               UserDefaults.standard.set(data, forKey: Keys.configSnippets)
+           }
+       }
+   }
 
-    var progressLog: String = ""
-    var isRunning: Bool = false
-    /// Which cancellable action is currently in progress (nil when idle).
-    var activeAction: ActiveAction?
-    /// Non-nil only while an SCP transfer is active; value is 0–100.
-    var transferProgress: Double? = nil
+   // MARK: - UI State
 
-    // MARK: - Cancellation
+   enum ActiveAction { case install, download }
 
-    private var currentTask: Task<Void, Never>?
-    private var currentProcess: Process?
+   var progressLog: String = ""
+   var isRunning: Bool = false
+   /// Which cancellable action is currently in progress (nil when idle).
+   var activeAction: ActiveAction?
+   /// Non-nil only while an SCP transfer is active; value is 0–100.
+   var transferProgress: Double? = nil
 
-    // MARK: - Services
+   // MARK: - Cancellation
 
-    private let scpService = SCPService()
-    private let sshService = SSHService()
+   private var currentTask: Task<Void, Never>?
+   private var currentProcess: Process?
 
-    // MARK: - Init
+   // MARK: - Services
 
-    init() {
-        let defaults = UserDefaults.standard
-        self.buildPath = defaults.string(forKey: Keys.buildPath) ?? ""
-        self.ipAddress = defaults.string(forKey: Keys.ipAddress) ?? ""
-        self.destinationFolder = defaults.string(forKey: Keys.destinationFolder) ?? "/tmp"
-        self.ipAddressHistory = defaults.stringArray(forKey: Keys.ipAddressHistory) ?? []
-        self.buildPathHistory = defaults.stringArray(forKey: Keys.buildPathHistory) ?? []
-    }
+   private let scpService = SCPService()
+   private let sshService = SSHService()
 
-    // MARK: - Public Actions
+   // MARK: - Init
 
-    /// Toggles between starting and cancelling the full install workflow.
-    func installBuild() {
-        if isRunning && activeAction == .install {
-            cancelInstall()
-            return
-        }
-        guard !isRunning else { return }
-        isRunning = true
-        activeAction = .install
-        currentTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                self.isRunning = false
-                self.activeAction = nil
-                self.currentTask = nil
-                self.currentProcess = nil
-            }
-            guard self.validateInputs() else { return }
-            self.addIPToHistory(self.ipAddress)
-            self.addBuildToHistory(self.buildPath)
+   init() {
+       let defaults = UserDefaults.standard
+       self.buildPath = defaults.string(forKey: Keys.buildPath) ?? ""
+       self.ipAddress = defaults.string(forKey: Keys.ipAddress) ?? ""
+       self.destinationFolder = defaults.string(forKey: Keys.destinationFolder) ?? "/tmp"
+       self.ipAddressHistory = defaults.stringArray(forKey: Keys.ipAddressHistory) ?? []
+       self.buildPathHistory = defaults.stringArray(forKey: Keys.buildPathHistory) ?? []
+       self.configText = defaults.string(forKey: Keys.configText) ?? ""
+       if let data = defaults.data(forKey: Keys.configSnippets),
+          let snippets = try? JSONDecoder().decode([ConfigSnippet].self, from: data) {
+           self.configSnippets = snippets
+       } else {
+           self.configSnippets = ConfigSnippet.defaults
+       }
+   }
 
-            guard (try? await self.runSCP()) == true else { return }
-            guard !Task.isCancelled else {
-                self.appendLog("\n⚠ Install cancelled by user.\n")
-                return
-            }
+   // MARK: - Public Actions
 
-            guard (try? await self.runFlashApp()) == true else { return }
-            guard !Task.isCancelled else {
-                self.appendLog("\n⚠ Install cancelled by user.\n")
-                return
-            }
+   /// Toggles between starting and cancelling the full install workflow.
+   func installBuild() {
+       if isRunning && activeAction == .install {
+           cancelInstall()
+           return
+       }
+       guard !isRunning else { return }
+       isRunning = true
+       activeAction = .install
+       currentTask = Task { @MainActor [weak self] in
+           guard let self else { return }
+           defer {
+               self.isRunning = false
+               self.activeAction = nil
+               self.currentTask = nil
+               self.currentProcess = nil
+           }
+           guard self.validateInputs() else { return }
+           self.addIPToHistory(self.ipAddress)
+           self.addBuildToHistory(self.buildPath)
 
-            try? await self.runReboot()
-            if !Task.isCancelled {
-                self.appendLog("\n━━━ Done ━━━\n")
-            } else {
-                self.appendLog("\n⚠ Install cancelled by user.\n")
-            }
-        }
-    }
+           guard (try? await self.runSCP()) == true else { return }
+           guard !Task.isCancelled else {
+               self.appendLog("\n⚠ Install cancelled by user.\n")
+               return
+           }
 
-    /// Cancels any in-flight install workflow.
-    func cancelInstall() {
-        appendLog("\n⚠ Cancelling…\n")
-        currentProcess?.terminate()
-        currentTask?.cancel()
-    }
+           guard (try? await self.runFlashApp()) == true else { return }
+           guard !Task.isCancelled else {
+               self.appendLog("\n⚠ Install cancelled by user.\n")
+               return
+           }
 
-    /// Toggles between starting and cancelling an SCP-only transfer.
-    func downloadBuild() {
-        if isRunning && activeAction == .download {
-            cancelInstall()
-            return
-        }
-        guard !isRunning else { return }
-        isRunning = true
-        activeAction = .download
-        currentTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                self.isRunning = false
-                self.activeAction = nil
-                self.currentTask = nil
-                self.currentProcess = nil
-            }
-            guard self.validateInputs() else { return }
-            self.addIPToHistory(self.ipAddress)
-            self.addBuildToHistory(self.buildPath)
-            guard (try? await self.runSCP()) == true else { return }
-            if !Task.isCancelled {
-                self.appendLog("\n━━━ Done ━━━\n")
-            } else {
-                self.appendLog("\n⚠ Transfer cancelled by user.\n")
-            }
-        }
-    }
+           try? await self.runReboot()
+           if !Task.isCancelled {
+               self.appendLog("\n━━━ Done ━━━\n")
+           } else {
+               self.appendLog("\n⚠ Install cancelled by user.\n")
+           }
+       }
+   }
 
-    /// Flash the build on the device only (build must already be on device).
-    func flashAppOnly() {
-        guard !isRunning else { return }
-        isRunning = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.isRunning = false }
-            guard self.validateIPAndDestination() else { return }
-            self.addIPToHistory(self.ipAddress)
-            guard (try? await self.runFlashApp()) == true else { return }
-            self.appendLog("\n━━━ Done ━━━\n")
-        }
-    }
+   /// Cancels any in-flight install workflow.
+   func cancelInstall() {
+       appendLog("\n⚠ Cancelling…\n")
+       currentProcess?.terminate()
+       currentTask?.cancel()
+   }
+
+   /// Toggles between starting and cancelling an SCP-only transfer.
+   func downloadBuild() {
+       if isRunning && activeAction == .download {
+           cancelInstall()
+           return
+       }
+       guard !isRunning else { return }
+       isRunning = true
+       activeAction = .download
+       currentTask = Task { @MainActor [weak self] in
+           guard let self else { return }
+           defer {
+               self.isRunning = false
+               self.activeAction = nil
+               self.currentTask = nil
+               self.currentProcess = nil
+           }
+           guard self.validateInputs() else { return }
+           self.addIPToHistory(self.ipAddress)
+           self.addBuildToHistory(self.buildPath)
+           guard (try? await self.runSCP()) == true else { return }
+           if !Task.isCancelled {
+               self.appendLog("\n━━━ Done ━━━\n")
+           } else {
+               self.appendLog("\n⚠ Transfer cancelled by user.\n")
+           }
+       }
+   }
+
+   /// Flash the build on the device only (build must already be on device).
+   func flashAppOnly() {
+       guard !isRunning else { return }
+       isRunning = true
+       Task { @MainActor [weak self] in
+           guard let self else { return }
+           defer { self.isRunning = false }
+           guard self.validateIPAndDestination() else { return }
+           self.addIPToHistory(self.ipAddress)
+           guard (try? await self.runFlashApp()) == true else { return }
+           self.appendLog("\n━━━ Done ━━━\n")
+       }
+   }
 
     /// Reboot the device only.
     func rebootOnly() {
@@ -169,180 +188,349 @@ final class InstallViewModel {
         }
     }
 
+    /// Writes the auto-update override JSON to
+    /// /opt/persistent/sky/aisettings.overrides.json on the device.
+    func preventAutoUpdate() {
+        guard !isRunning else { return }
+        guard validateIPOnly() else { return }
+        isRunning = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isRunning = false; self.currentProcess = nil }
+            self.addIPToHistory(self.ipAddress)
+            self.appendLog("━━━ Writing aisettings.overrides.json to device ━━━\n")
+
+            let json = """
+            {
+              "dynamicIUIupdate": {
+                "enable": false,
+                "checkOnStartup": false
+              },
+              "apps": {
+                "extraEnvVars": [
+                  "AAMP_CFG_TEXT=info=true,progress=true,monitorAV=true"
+                ]
+              }
+            }
+            """
+
+            let remotePath = "/opt/persistent/sky/aisettings.overrides.json"
+            let command = "mkdir -p /opt/persistent/sky && cat > \(remotePath).tmp && mv \(remotePath).tmp \(remotePath)"
+
+            let status = (try? await self.sshService.execute(
+                deviceIP: self.ipAddress,
+                command: command,
+                stdin: json,
+                onOutput: { [weak self] text in self?.appendLog(text) },
+                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+            )) ?? -1
+
+            if status == 0 {
+                self.appendLog("✔ Auto-update override written to \(remotePath).\n")
+                self.appendLog("Written JSON:\n\(json)\n")
+            } else {
+                self.appendLog("✖ Failed to write auto-update override (exit \(status)).\n")
+            }
+        }
+    }
+
     /// Clears the progress log.
     func clearLog() {
         progressLog = ""
     }
 
-    // MARK: - Private Workflow Steps
+   // MARK: - AAMP Config
 
-    /// Returns `false` if the step failed and the caller should abort.
-    @discardableResult
-    private func runSCP() async throws -> Bool {
-        appendLog("━━━ Transferring build via SCP ━━━\n")
-        do {
-            let status = try await scpService.transfer(
-                buildPath: buildPath,
-                deviceIP: ipAddress,
-                destinationFolder: destinationFolder,
-                onOutput: { [weak self] text in self?.appendLog(text) },
-                onProgress: { [weak self] pct in self?.transferProgress = pct },
-                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
-            )
-            if status != 0 {
-                appendLog("✖ SCP failed with exit code \(status)\n")
-                return false
-            }
-            appendLog("✔ Build transferred successfully.\n\n")
-            return true
-        } catch {
-            transferProgress = nil
-            appendLog("✖ SCP error: \(error.localizedDescription)\n")
-            return false
+    /// Appends a snippet's value to the config text, ensuring newline separation.
+    func appendSnippet(_ snippet: ConfigSnippet) {
+        if !configText.isEmpty && !configText.hasSuffix("\n") { configText += "\n" }
+        configText += snippet.value
+        if !configText.hasSuffix("\n") { configText += "\n" }
+    }
+
+    /// Appends every palette value to the config text, in order.
+    func appendAllSnippets() {
+        for snippet in configSnippets {
+            appendSnippet(snippet)
         }
     }
 
-    @discardableResult
-    private func runFlashApp() async throws -> Bool {
-        appendLog("━━━ Flashing build on device ━━━\n")
-        let buildFilename = (buildPath as NSString).lastPathComponent
+   func addSnippet(value: String) {
+       let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+       guard !trimmed.isEmpty else { return }
+       configSnippets.append(ConfigSnippet(value: trimmed))
+   }
 
-        // Llama devices require the destination folder to end in a space.
-        let isLlama = await detectLlamaDevice()
-        let effectiveDestination = isLlama ? destinationFolder + " " : destinationFolder
-        let remotePath = "\(effectiveDestination)/\(buildFilename)"
-        do {
-            let status = try await sshService.execute(
-                deviceIP: ipAddress,
-                command: "FlashApp \(remotePath)",
-                onOutput: { [weak self] text in self?.appendLog(text) },
-                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
-            )
-            if status != 0 {
-                appendLog("✖ FlashApp failed with exit code \(status)\n")
-                return false
-            }
-            appendLog("✔ Build flashed successfully.\n\n")
-            return true
-        } catch {
-            appendLog("✖ FlashApp error: \(error.localizedDescription)\n")
-            return false
-        }
-    }
+   func updateSnippet(_ snippet: ConfigSnippet) {
+       if let i = configSnippets.firstIndex(where: { $0.id == snippet.id }) {
+           configSnippets[i] = snippet
+       }
+   }
 
-    private func runReboot() async throws {
-        appendLog("━━━ Rebooting device ━━━\n")
-        do {
-            let status = try await sshService.execute(
-                deviceIP: ipAddress,
-                command: "/sbin/reboot",
-                onOutput: { [weak self] text in self?.appendLog(text) },
-                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
-            )
-            if status == 0 {
-                appendLog("✔ Reboot command sent.\n")
-            } else {
-                appendLog("⚠ Reboot exited with code \(status) (connection may have dropped – this is expected).\n")
-            }
-        } catch {
-            appendLog("⚠ Reboot error: \(error.localizedDescription) (may be expected if connection dropped).\n")
-        }
-    }
+   func deleteSnippet(_ snippet: ConfigSnippet) {
+       configSnippets.removeAll { $0.id == snippet.id }
+   }
 
-    // MARK: - Helpers
+   func deleteSnippets(at offsets: IndexSet) {
+       configSnippets.remove(atOffsets: offsets)
+   }
 
-    /// Queries the device's command prompt / hostname over SSH and returns `true`
-    /// if it contains "llama" (case-insensitive). Llama devices require the flash
-    /// destination folder to end in a trailing space.
-    private func detectLlamaDevice() async -> Bool {
-        appendLog("━━━ Detecting device type ━━━\n")
+   func moveSnippet(from source: IndexSet, to destination: Int) {
+       configSnippets.move(fromOffsets: source, toOffset: destination)
+   }
 
-        // Reference box so the @Sendable output callback can accumulate text.
-        final class OutputBox: @unchecked Sendable { var text = "" }
-        let box = OutputBox()
+   /// Reads /opt/aamp.cfg from the device into `configText` (file may not exist).
+   func loadConfigFromDevice() {
+       guard !isRunning else { return }
+       guard validateIPOnly() else { return }
+       isRunning = true
+       Task { @MainActor [weak self] in
+           guard let self else { return }
+           defer { self.isRunning = false; self.currentProcess = nil }
+           self.addIPToHistory(self.ipAddress)
+           self.appendLog("━━━ Reading /opt/aamp.cfg from device ━━━\n")
 
-        _ = try? await sshService.execute(
-            deviceIP: ipAddress,
-            command: "echo \"$PS1\"; hostname; cat /etc/hostname 2>/dev/null",
-            onOutput: { [weak self] text in
-                box.text += text
-                self?.appendLog(text)
-            },
-            onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
-        )
+           final class Box: @unchecked Sendable { var text = "" }
+           let box = Box()
 
-        let isLlama = box.text.lowercased().contains("llama")
-        appendLog(isLlama
-            ? "→ Llama device detected — adding trailing space to destination.\n"
-            : "→ Non-Llama device — using destination as-is.\n")
-        return isLlama
-    }
+           let status = (try? await self.sshService.execute(
+               deviceIP: self.ipAddress,
+               command: "cat /opt/aamp.cfg 2>/dev/null",
+               onOutput: { [weak self] text in
+                   // stdout = actual file contents (skip our own command echo)
+                   if !text.hasPrefix("▶ ") { box.text += text }
+                   self?.appendLog(text)
+               },
+               onError: { [weak self] text in
+                   // stderr = ssh client warnings; log only, never store in config
+                   self?.appendLog(text)
+               },
+               onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+           )) ?? -1
 
-    func validateInputs() -> Bool {        if buildPath.isEmpty {
-            appendLog("✖ Error: No build file selected.\n")
-            return false
-        }
-        if !FileManager.default.fileExists(atPath: buildPath) {
-            appendLog("✖ Error: Build file does not exist at path:\n  \(buildPath)\n")
-            return false
-        }
-        return validateIPAndDestination()
-    }
+           if status == 0 {
+               self.configText = box.text
+               self.appendLog(box.text.isEmpty
+                   ? "✔ No config on device yet (file empty or absent).\n"
+                   : "✔ Config loaded (\(box.text.count) characters).\n")
+           } else {
+               self.appendLog("✖ Failed to read config (exit \(status)).\n")
+           }
+       }
+   }
 
-    /// Validates only IP address and destination folder (no local file required).
-    func validateIPAndDestination() -> Bool {
-        if ipAddress.trimmingCharacters(in: .whitespaces).isEmpty {
-            appendLog("✖ Error: IP address is empty.\n")
-            return false
-        }
-        if !isValidIP(ipAddress) {
-            appendLog("✖ Error: '\(ipAddress)' is not a valid IP address.\n")
-            return false
-        }
-        if destinationFolder.trimmingCharacters(in: .whitespaces).isEmpty {
-            appendLog("✖ Error: Destination folder is empty.\n")
-            return false
-        }
-        return true
-    }
+   /// Writes `configText` to /opt/aamp.cfg on the device (atomic via temp + mv).
+   func saveConfigToDevice() {
+       guard !isRunning else { return }
+       guard validateIPOnly() else { return }
+       isRunning = true
+       Task { @MainActor [weak self] in
+           guard let self else { return }
+           defer { self.isRunning = false; self.currentProcess = nil }
+           self.addIPToHistory(self.ipAddress)
+           self.appendLog("━━━ Writing /opt/aamp.cfg to device ━━━\n")
 
-    func isValidIP(_ ip: String) -> Bool {
-        let parts = ip.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        return parts.allSatisfy { part in
-            guard let num = Int(part), (0...255).contains(num) else { return false }
-            return true
-        }
-    }
+           let status = (try? await self.sshService.execute(
+               deviceIP: self.ipAddress,
+               command: "cat > /opt/aamp.cfg.tmp && mv /opt/aamp.cfg.tmp /opt/aamp.cfg",
+               stdin: self.configText,
+               onOutput: { [weak self] text in self?.appendLog(text) },
+               onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+           )) ?? -1
 
-    func addIPToHistory(_ ip: String) {
-        var history = ipAddressHistory
-        history.removeAll { $0 == ip }
-        history.insert(ip, at: 0)
-        if history.count > 10 { history = Array(history.prefix(10)) }
-        ipAddressHistory = history
-    }
+           if status == 0 {
+               self.appendLog("✔ Config written to /opt/aamp.cfg.\n")
+           } else {
+               self.appendLog("✖ Failed to write config (exit \(status)).\n")
+           }
+       }
+   }
 
-    func addBuildToHistory(_ path: String) {
-        guard !path.isEmpty else { return }
-        var history = buildPathHistory
-        history.removeAll { $0 == path }
-        history.insert(path, at: 0)
-        if history.count > 10 { history = Array(history.prefix(10)) }
-        buildPathHistory = history
-    }
+   // MARK: - Private Workflow Steps
 
-    func appendLog(_ text: String) {
-        progressLog += text
-    }
+   /// Returns `false` if the step failed and the caller should abort.
+   @discardableResult
+   private func runSCP() async throws -> Bool {
+       appendLog("━━━ Transferring build via SCP ━━━\n")
+       do {
+           let status = try await scpService.transfer(
+               buildPath: buildPath,
+               deviceIP: ipAddress,
+               destinationFolder: destinationFolder,
+               onOutput: { [weak self] text in self?.appendLog(text) },
+               onProgress: { [weak self] pct in self?.transferProgress = pct },
+               onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+           )
+           if status != 0 {
+               appendLog("✖ SCP failed with exit code \(status)\n")
+               return false
+           }
+           appendLog("✔ Build transferred successfully.\n\n")
+           return true
+       } catch {
+           transferProgress = nil
+           appendLog("✖ SCP error: \(error.localizedDescription)\n")
+           return false
+       }
+   }
 
-    // MARK: - UserDefaults Keys
+   @discardableResult
+   private func runFlashApp() async throws -> Bool {
+       appendLog("━━━ Flashing build on device ━━━\n")
+       let buildFilename = (buildPath as NSString).lastPathComponent
 
-    private enum Keys {
-        static let buildPath = "buildPath"
-        static let ipAddress = "ipAddress"
-        static let destinationFolder = "destinationFolder"
-        static let ipAddressHistory = "ipAddressHistory"
-        static let buildPathHistory = "buildPathHistory"
-    }
+       // Llama devices require the destination folder to end in a space.
+       let isLlama = await detectLlamaDevice()
+       let effectiveDestination = isLlama ? destinationFolder + " " : destinationFolder
+       let remotePath = "\(effectiveDestination)/\(buildFilename)"
+       do {
+           let status = try await sshService.execute(
+               deviceIP: ipAddress,
+               command: "FlashApp \(remotePath)",
+               onOutput: { [weak self] text in self?.appendLog(text) },
+               onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+           )
+           if status != 0 {
+               appendLog("✖ FlashApp failed with exit code \(status)\n")
+               return false
+           }
+           appendLog("✔ Build flashed successfully.\n\n")
+           return true
+       } catch {
+           appendLog("✖ FlashApp error: \(error.localizedDescription)\n")
+           return false
+       }
+   }
+
+   private func runReboot() async throws {
+       appendLog("━━━ Rebooting device ━━━\n")
+       do {
+           let status = try await sshService.execute(
+               deviceIP: ipAddress,
+               command: "/sbin/reboot",
+               onOutput: { [weak self] text in self?.appendLog(text) },
+               onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+           )
+           if status == 0 {
+               appendLog("✔ Reboot command sent.\n")
+           } else {
+               appendLog("⚠ Reboot exited with code \(status) (connection may have dropped – this is expected).\n")
+           }
+       } catch {
+           appendLog("⚠ Reboot error: \(error.localizedDescription) (may be expected if connection dropped).\n")
+       }
+   }
+
+   // MARK: - Helpers
+
+   /// Queries the device's command prompt / hostname over SSH and returns `true`
+   /// if it contains "llama" (case-insensitive). Llama devices require the flash
+   /// destination folder to end in a trailing space.
+   private func detectLlamaDevice() async -> Bool {
+       appendLog("━━━ Detecting device type ━━━\n")
+
+       // Reference box so the @Sendable output callback can accumulate text.
+       final class OutputBox: @unchecked Sendable { var text = "" }
+       let box = OutputBox()
+
+       _ = try? await sshService.execute(
+           deviceIP: ipAddress,
+           command: "echo \"$PS1\"; hostname; cat /etc/hostname 2>/dev/null",
+           onOutput: { [weak self] text in
+               box.text += text
+               self?.appendLog(text)
+           },
+           onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+       )
+
+       let isLlama = box.text.lowercased().contains("llama")
+       appendLog(isLlama
+           ? "→ Llama device detected — adding trailing space to destination.\n"
+           : "→ Non-Llama device — using destination as-is.\n")
+       return isLlama
+   }
+
+   func validateInputs() -> Bool {
+       if buildPath.isEmpty {
+           appendLog("✖ Error: No build file selected.\n")
+           return false
+       }
+       if !FileManager.default.fileExists(atPath: buildPath) {
+           appendLog("✖ Error: Build file does not exist at path:\n  \(buildPath)\n")
+           return false
+       }
+       return validateIPAndDestination()
+   }
+
+   /// Validates only IP address and destination folder (no local file required).
+   func validateIPAndDestination() -> Bool {
+       if ipAddress.trimmingCharacters(in: .whitespaces).isEmpty {
+           appendLog("✖ Error: IP address is empty.\n")
+           return false
+       }
+       if !isValidIP(ipAddress) {
+           appendLog("✖ Error: '\(ipAddress)' is not a valid IP address.\n")
+           return false
+       }
+       if destinationFolder.trimmingCharacters(in: .whitespaces).isEmpty {
+           appendLog("✖ Error: Destination folder is empty.\n")
+           return false
+       }
+       return true
+   }
+
+   /// Validates only the IP address (config actions don't need a build file).
+   func validateIPOnly() -> Bool {
+       if ipAddress.trimmingCharacters(in: .whitespaces).isEmpty {
+           appendLog("✖ Error: IP address is empty.\n")
+           return false
+       }
+       if !isValidIP(ipAddress) {
+           appendLog("✖ Error: '\(ipAddress)' is not a valid IP address.\n")
+           return false
+       }
+       return true
+   }
+
+   func isValidIP(_ ip: String) -> Bool {
+       let parts = ip.split(separator: ".")
+       guard parts.count == 4 else { return false }
+       return parts.allSatisfy { part in
+           guard let num = Int(part), (0...255).contains(num) else { return false }
+           return true
+       }
+   }
+
+   func addIPToHistory(_ ip: String) {
+       var history = ipAddressHistory
+       history.removeAll { $0 == ip }
+       history.insert(ip, at: 0)
+       if history.count > 10 { history = Array(history.prefix(10)) }
+       ipAddressHistory = history
+   }
+
+   func addBuildToHistory(_ path: String) {
+       guard !path.isEmpty else { return }
+       var history = buildPathHistory
+       history.removeAll { $0 == path }
+       history.insert(path, at: 0)
+       if history.count > 10 { history = Array(history.prefix(10)) }
+       buildPathHistory = history
+   }
+
+   func appendLog(_ text: String) {
+       progressLog += text
+   }
+
+   // MARK: - UserDefaults Keys
+
+   private enum Keys {
+       static let buildPath = "buildPath"
+       static let ipAddress = "ipAddress"
+       static let destinationFolder = "destinationFolder"
+       static let ipAddressHistory = "ipAddressHistory"
+       static let buildPathHistory = "buildPathHistory"
+       static let configText = "configText"
+       static let configSnippets = "configSnippets"
+   }
 }
