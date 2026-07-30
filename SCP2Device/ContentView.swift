@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var viewModel = InstallViewModel()
+    @State private var showConfigEditor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -79,6 +80,23 @@ struct ContentView: View {
                 .disabled(viewModel.isRunning)
                 .help("SSH to the device and run reboot")
 
+                Button("Prevent Auto Update") {
+                    viewModel.preventAutoUpdate()
+                }
+                .controlSize(.small)
+                .disabled(viewModel.isRunning)
+                .help("Write aisettings.overrides.json to disable dynamic auto-updates on the device")
+
+                Spacer()
+                    .frame(width: 20)
+
+                Button("Edit AAMP Config…") {
+                    showConfigEditor = true
+                }
+                .controlSize(.small)
+                .disabled(viewModel.isRunning)
+                .help("Edit /opt/aamp.cfg on the device using the settings palette")
+
                 Spacer()
 
                 Button("Clear Log") {
@@ -95,6 +113,9 @@ struct ContentView: View {
         }
         .padding()
         .frame(minWidth: 620, minHeight: 520)
+        .sheet(isPresented: $showConfigEditor) {
+            ConfigEditorView(viewModel: viewModel)
+        }
     }
 }
 
