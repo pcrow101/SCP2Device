@@ -26,12 +26,15 @@ struct ContentView: View {
 
             // --- Action buttons ---
             HStack(spacing: 8) {
-                Button("Install Build") {
+                Button(viewModel.activeAction == .install ? "Cancel" : "Install Build") {
                     viewModel.installBuild()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isRunning)
-                .help("Transfer the build via SCP, flash it, then reboot the device")
+                .tint(viewModel.activeAction == .install ? .red : .accentColor)
+                .disabled(viewModel.isRunning && viewModel.activeAction != .install)
+                .help(viewModel.activeAction == .install
+                      ? "Cancel the current install"
+                      : "Transfer the build via SCP, flash it, then reboot the device")
 
                 if viewModel.isRunning {
                     if let pct = viewModel.transferProgress {
@@ -52,12 +55,15 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button("Download Only") {
+                Button(viewModel.activeAction == .download ? "Cancel" : "Download Only") {
                     viewModel.downloadBuild()
                 }
                 .controlSize(.small)
-                .disabled(viewModel.isRunning)
-                .help("SCP the selected build file onto the device only")
+                .tint(viewModel.activeAction == .download ? .red : nil)
+                .disabled(viewModel.isRunning && viewModel.activeAction != .download)
+                .help(viewModel.activeAction == .download
+                      ? "Cancel the current download"
+                      : "SCP the selected build file onto the device only")
 
                 Button("Flash Only") {
                     viewModel.flashAppOnly()

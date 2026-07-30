@@ -11,11 +11,13 @@ struct SSHService: Sendable {
     func execute(
         deviceIP: String,
         command: String,
-        onOutput: @MainActor @escaping @Sendable (String) -> Void
+        onOutput: @MainActor @escaping @Sendable (String) -> Void,
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void = { _ in }
     ) async throws -> Int32 {
 
         let arguments: [String] = [
             "-p", "10022",
+            "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "root@\(deviceIP)",
@@ -28,7 +30,8 @@ struct SSHService: Sendable {
         return try await runProcess(
             launchPath: "/usr/bin/ssh",
             arguments: arguments,
-            onOutput: onOutput
+            onOutput: onOutput,
+            onProcessStarted: onProcessStarted
         )
     }
 
@@ -37,7 +40,8 @@ struct SSHService: Sendable {
     private func runProcess(
         launchPath: String,
         arguments: [String],
-        onOutput: @MainActor @escaping @Sendable (String) -> Void
+        onOutput: @MainActor @escaping @Sendable (String) -> Void,
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void
     ) async throws -> Int32 {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
@@ -69,6 +73,7 @@ struct SSHService: Sendable {
 
             do {
                 try process.run()
+                Task { @MainActor in onProcessStarted(process) }
             } catch {
                 continuation.resume(throwing: error)
             }
