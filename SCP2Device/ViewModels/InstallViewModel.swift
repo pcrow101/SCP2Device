@@ -188,9 +188,230 @@ final class InstallViewModel {
         }
     }
 
+    /// SSH to the device, collect a set of build/version fields, and print a
+    /// neatly formatted summary to the log.
+    ///
+    /// Fields (newest match kept if multiple):
+    ///  - Image Name:          grep 'imagename:' /version.txt
+    ///  - Middleware Version:  grep 'MIDDLEWARE_VERSION=' /version.txt
+    ///  - VIPA Build:          grep 'viper_ipa.*widget version' /opt/logs/sky-messages.log*
+    ///  - XUMO Build:          grep "app 'com.xumo.ipa' loaded: version" /opt/logs/sky-messages.log*
+    ///  - OSS_VERSION:         grep 'OSS_VERSION=' /version.txt
+    ///  - Essos Info:          grep '(essos) version' /opt/logs/sky-messages.log*
+    ///  - Vendor Version:      grep 'VENDOR_VERSION=' /version.txt
+    ///  - Application Version: grep 'APPLICATION_VERSION=' /version.txt
+    ///  - PP SKY APP version:  grep 'PP SKY APP' /opt/logs/sky-messages.log*
+    ///  - RDK Browser Version: grep 'com.sky.rdkbrowser.*version' /opt/logs/sky-messages.log*
+    ///  - RDK Type:            grep 'FW_CLASS=' /version.txt
+    ///  - Branch:              grep 'BRANCH=' /version.txt
+    ///  - Build Time:          grep 'BRANCH=' /version.txt   (as specified)
+    ///  - AAMP Build Info:     grep 'BRANCH=' /version.txt   (as specified)
+    func showBuildInfo() {
+        guard !isRunning else { return }
+        guard validateIPOnly() else { return }
+        isRunning = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isRunning = false; self.currentProcess = nil }
+            self.addIPToHistory(self.ipAddress)
+            self.appendLog("━━━ Fetching build info from device ━━━\n")
+
+            // One shell command that emits delimited sections. Version-file
+            // fields use plain grep; log-file fields use `zgrep | sort |
+            // tail -n 1` so we pick the newest line by leading timestamp
+            // across both plain and rotated .gz logs.
+            let remoteCommand = #"""
+            { \
+              echo '===IMAGE==='; \
+              grep -h 'imagename:' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===MW==='; \
+              grep -h 'MIDDLEWARE_VERSION=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===VIPA==='; \
+              grep -h 'viper_ipa.*widget version:' /opt/logs/sky-messages.log* 2>/dev/null | tail -n 1; \
+              echo '===XUMO==='; \
+              grep -h "app 'com.xumo.ipa' loaded: version" /opt/logs/sky-messages.log* 2>/dev/null | tail -n 1; \
+              echo '===OSS==='; \
+              grep -h 'OSS_VERSION=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===ESSOS==='; \
+              grep -h '(essos) version' /opt/logs/sky-messages.log* 2>/dev/null | tail -n 1; \
+              echo '===VENDOR==='; \
+              grep -h 'VENDOR_VERSION=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===APP==='; \
+              grep -h 'APPLICATION_VERSION=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===PPSKY==='; \
+              grep -h 'PP SKY APP version' /opt/logs/sky-messages.log* 2>/dev/null | sort | tail -n 1; \
+              echo '===RDKB==='; \
+              grep -h 'com.sky.rdkbrowser.*version' /opt/logs/sky-messages.log* 2>/dev/null | tail -n 1; \
+              echo '===RDKT==='; \
+              grep -h 'FW_CLASS=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===BRANCH==='; \
+              grep -h 'BRANCH=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===BUILDTIME==='; \
+              grep -h 'BUILD_TIME=' /version.txt 2>/dev/null | tail -n 1; \
+              echo '===AAMPB==='; \
+              grep -h 'AAMP_BUILD_INFO:' /opt/logs/sky-messages.log* 2>/dev/null | tail -n 1; \
+              echo '===END==='; \
+            }
+            """#
+
+            final class Box: @unchecked Sendable { var text = "" }
+            let box = Box()
+
+            let status = (try? await self.sshService.execute(
+                deviceIP: self.ipAddress,
+                command: remoteCommand,
+                onOutput: { text in
+                    // Silently capture stdout; don't spam the log with raw output.
+                    if !text.hasPrefix("▶ ") { box.text += text }
+                },
+                onError: { [weak self] text in self?.appendLog(text) },
+                onProcessStarted: { [weak self] proc in self?.currentProcess = proc }
+            )) ?? -1
+
+            guard status == 0 else {
+                self.appendLog("✖ Failed to fetch build info (exit \(status)).\n")
+                return
+            }
+
+            let info = Self.parseBuildInfo(box.text)
+            self.appendLog(Self.formatBuildInfo(info))
+        }
+    }
+
+    // MARK: - Build Info helpers
+
+    struct BuildInfo {
+        var imageName: String?
+        var middleware: String?
+        var vipa: String?
+        var xumo: String?
+        var oss: String?
+        var essos: String?
+        var vendor: String?
+        var application: String?
+        var ppSkyApp: String?
+        var rdkBrowser: String?
+        var rdkType: String?
+        var branch: String?
+        var buildTime: String?
+        var aampBuild: String?
+    }
+
+    /// Parses the delimited output produced by `showBuildInfo`'s remote command.
+    static func parseBuildInfo(_ raw: String) -> BuildInfo {
+        var info = BuildInfo()
+        let markers = [
+            "===IMAGE===", "===MW===", "===VIPA===", "===XUMO===",
+            "===OSS===", "===ESSOS===", "===VENDOR===", "===APP===",
+            "===PPSKY===", "===RDKB===", "===RDKT===", "===BRANCH===",
+            "===BUILDTIME===", "===AAMPB===", "===END==="
+        ]
+        var sections: [String: String] = [:]
+        var current: String? = nil
+        var buffer = ""
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if markers.contains(trimmed) {
+                if let key = current {
+                    sections[key] = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                current = trimmed
+                buffer = ""
+            } else if current != nil {
+                if !buffer.isEmpty { buffer += "\n" }
+                buffer += String(line)
+            }
+        }
+
+        // Version.txt style: KEY=VALUE
+        info.imageName   = extractAfter(keyword: "imagename:",
+                                        in: sections["===IMAGE==="],
+                                        caseInsensitive: true)
+                            ?? sections["===IMAGE==="]?.nilIfEmpty
+        info.middleware  = extractAfter(keyword: "MIDDLEWARE_VERSION=", in: sections["===MW==="])
+                            ?? sections["===MW==="]?.nilIfEmpty
+        info.oss         = extractAfter(keyword: "OSS_VERSION=",         in: sections["===OSS==="])
+                            ?? sections["===OSS==="]?.nilIfEmpty
+        info.vendor      = extractAfter(keyword: "VENDOR_VERSION=",      in: sections["===VENDOR==="])
+                            ?? sections["===VENDOR==="]?.nilIfEmpty
+        info.application = extractAfter(keyword: "APPLICATION_VERSION=", in: sections["===APP==="])
+                            ?? sections["===APP==="]?.nilIfEmpty
+        info.rdkType     = extractAfter(keyword: "FW_CLASS=",            in: sections["===RDKT==="])
+                            ?? sections["===RDKT==="]?.nilIfEmpty
+        info.branch      = extractAfter(keyword: "BRANCH=",              in: sections["===BRANCH==="])
+                            ?? sections["===BRANCH==="]?.nilIfEmpty
+        info.buildTime   = extractAfter(keyword: "BUILD_TIME=",              in: sections["===BUILDTIME==="])
+                            ?? sections["===BUILDTIME==="]?.nilIfEmpty
+        info.aampBuild   = extractAfter(keyword: "AAMP_BUILD_INFO:",              in: sections["===AAMPB==="])
+                            ?? sections["===AAMPB==="]?.nilIfEmpty
+
+        // Log lines: extract text after the version keyword (strip syslog prefix).
+        info.vipa       = extractAfter(keyword: "widget version:",  in: sections["===VIPA==="])
+                            ?? sections["===VIPA==="]?.nilIfEmpty
+        info.xumo       = extractAfter(keyword: "loaded: version", in: sections["===XUMO==="])
+                            ?? sections["===XUMO==="]?.nilIfEmpty
+        info.essos      = extractAfter(keyword: "(essos) version", in: sections["===ESSOS==="])
+                            ?? sections["===ESSOS==="]?.nilIfEmpty
+        info.ppSkyApp   = extractAfter(keyword: "version:",      in: sections["===PPSKY==="])
+                            ?? sections["===PPSKY==="]?.nilIfEmpty
+        info.rdkBrowser = extractAfter(keyword: "version",         in: sections["===RDKB==="])
+                            ?? sections["===RDKB==="]?.nilIfEmpty
+
+        return info
+    }
+
+    /// Return the text after the first occurrence of `keyword` in `line`,
+    /// with any surrounding double or single quotes stripped.
+    private static func extractAfter(keyword: String,
+                                     in line: String?,
+                                     caseInsensitive: Bool = false) -> String? {
+        guard let line, !line.isEmpty else { return nil }
+        let options: String.CompareOptions = caseInsensitive ? [.caseInsensitive] : []
+        if let range = line.range(of: keyword, options: options) {
+            var value = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            // Strip surrounding matching quotes (shell KEY="value" style).
+            if value.count >= 2,
+               let first = value.first, let last = value.last,
+               first == last, first == "\"" || first == "'" {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    /// Format a `BuildInfo` value as a neat, monospaced summary block.
+    static func formatBuildInfo(_ info: BuildInfo) -> String {
+        let rows: [(String, String?)] = [
+            ("Image Name",          info.imageName),
+            ("Middleware Version",  info.middleware),
+            ("VIPA Build",          info.vipa),
+            ("XUMO Build",          info.xumo),
+            ("OSS Version",         info.oss),
+            ("Essos Info",          info.essos),
+            ("Vendor Version",      info.vendor),
+            ("Application Version", info.application),
+            ("PP SKY APP version",  info.ppSkyApp),
+            ("RDK Browser Version", info.rdkBrowser),
+            ("RDK Type",            info.rdkType),
+            ("Branch",              info.branch),
+            ("Build Time",          info.buildTime),
+            ("AAMP Build Info",     info.aampBuild),
+        ]
+        let labelWidth = rows.map { $0.0.count }.max() ?? 0
+        var out = "\n┌─ Device Build Info ────────────────────────\n"
+        for (label, value) in rows {
+            let paddedLabel = label.padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+            let display = (value?.isEmpty == false) ? value! : "(not found)"
+            out += "│ \(paddedLabel) : \(display)\n"
+        }
+        out += "└────────────────────────────────────────────\n"
+        return out
+    }
+
     /// Writes the auto-update override JSON to
     /// /opt/persistent/sky/aisettings.overrides.json on the device.
-    func preventAutoUpdate() {
+    func disableAutoUpdate() {
         guard !isRunning else { return }
         guard validateIPOnly() else { return }
         isRunning = true
@@ -532,5 +753,11 @@ final class InstallViewModel {
        static let buildPathHistory = "buildPathHistory"
        static let configText = "configText"
        static let configSnippets = "configSnippets"
-   }
+    }
+}
+
+private extension String {
+    /// Returns nil when the string is empty (after being unwrapped from an
+    /// Optional via `?.nilIfEmpty`); otherwise returns self.
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

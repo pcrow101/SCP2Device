@@ -8,7 +8,16 @@ struct IPAddressField: View {
         LabeledContent("Device IP") {
             HStack {
                 TextField("e.g. 192.168.1.100", text: $viewModel.ipAddress)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .focusEffectDisabled()
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(Color(nsColor: .textBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                    )
 
                 if !viewModel.ipAddressHistory.isEmpty {
                     Menu {

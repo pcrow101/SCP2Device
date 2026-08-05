@@ -2,7 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// A row containing a label, the selected file path, a history menu, and a Browse… button.
-/// Also accepts files dropped anywhere onto the drop zone.
+/// Also accepts files dropped anywhere onto the row (via an AppKit drop catcher
+/// overlay because SwiftUI's `.onDrop` is unreliable on macOS 26).
 struct FileBrowserRow: View {
     @Bindable var viewModel: InstallViewModel
     @State private var isTargeted = false
@@ -25,6 +26,7 @@ struct FileBrowserRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
+                .frame(minHeight: 28)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(
@@ -41,16 +43,12 @@ struct FileBrowserRow: View {
                                 )
                         )
                 )
-                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
-                    guard let provider = providers.first else { return false }
-                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                        guard let url, url.isFileURL else { return }
-                        DispatchQueue.main.async {
-                            viewModel.buildPath = url.path
-                        }
+                // AppKit drop catcher — reliable on macOS 26.
+                .overlay(
+                    FileDropCatcher(isTargeted: $isTargeted) { url in
+                        applyDroppedURL(url)
                     }
-                    return true
-                }
+                )
 
                 // History menu
                 if !viewModel.buildPathHistory.isEmpty {
@@ -77,9 +75,21 @@ struct FileBrowserRow: View {
 
                 Button("Browse…") {
                     chooseFile()
-                }.controlSize(.small) 
+                }.controlSize(.small)
             }
         }
+    }
+
+    private func applyDroppedURL(_ url: URL) {
+        let path = url.isFileURL ? url.path : url.absoluteString
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        guard exists, !isDir.boolValue else {
+            viewModel.appendLog("⚠ Drop ignored: not an existing file (\(path)).\n")
+            return
+        }
+        viewModel.buildPath = path
+        viewModel.appendLog("✔ Build file set via drop: \(path)\n")
     }
 
     private func chooseFile() {
