@@ -19,11 +19,24 @@ struct ContentView: View {
                 IPAddressField(viewModel: viewModel)
                 LabeledContent("Destination") {
                     TextField("/tmp", text: $viewModel.destinationFolder)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .focusEffectDisabled()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(Color(nsColor: .textBackgroundColor),
+                                    in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                        )
                 }
             }
             .padding()
-            .glassEffect(in: RoundedRectangle(cornerRadius: 12))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
 
             // --- Action buttons ---
             HStack(spacing: 8) {
@@ -80,15 +93,24 @@ struct ContentView: View {
                 .disabled(viewModel.isRunning)
                 .help("SSH to the device and run reboot")
 
-                Button("Prevent Auto Update") {
-                    viewModel.preventAutoUpdate()
+                Button("Build Info") {
+                    viewModel.showBuildInfo()
+                }
+                .controlSize(.small)
+                .disabled(viewModel.isRunning)
+                .help("SSH to the device and show /version.txt in the log")
+
+                Spacer()
+//                    .frame(width: 40)
+                
+                Button("Disable Auto Update") {
+                    viewModel.disableAutoUpdate()
                 }
                 .controlSize(.small)
                 .disabled(viewModel.isRunning)
                 .help("Write aisettings.overrides.json to disable dynamic auto-updates on the device")
 
-                Spacer()
-                    .frame(width: 20)
+
 
                 Button("Edit AAMP Config…") {
                     showConfigEditor = true
@@ -113,6 +135,15 @@ struct ContentView: View {
         }
         .padding()
         .frame(minWidth: 620, minHeight: 520)
+        // Clicking empty space resigns first responder so TextField focus
+        // rings clear when the user clicks away.
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+        )
         .sheet(isPresented: $showConfigEditor) {
             ConfigEditorView(viewModel: viewModel)
         }
