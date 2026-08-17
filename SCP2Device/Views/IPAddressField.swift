@@ -2,12 +2,12 @@ import SwiftUI
 
 /// A text field for the device IP address with a dropdown of previously used addresses.
 struct IPAddressField: View {
-    @Bindable var viewModel: InstallViewModel
+    @Bindable var session: DeviceSession
 
     var body: some View {
         LabeledContent("Device IP") {
             HStack {
-                TextField("e.g. 192.168.1.100", text: $viewModel.ipAddress)
+                TextField("e.g. 192.168.1.100", text: $session.ipAddress)
                     .textFieldStyle(.plain)
                     .focusEffectDisabled()
                     .padding(.horizontal, 6)
@@ -19,16 +19,16 @@ struct IPAddressField: View {
                             .stroke(Color.primary.opacity(0.2), lineWidth: 1)
                     )
 
-                if !viewModel.ipAddressHistory.isEmpty {
+                if !session.ipAddressHistory.isEmpty {
                     Menu {
-                        ForEach(viewModel.ipAddressHistory, id: \.self) { ip in
+                        ForEach(session.ipAddressHistory, id: \.self) { ip in
                             Button(ip) {
-                                viewModel.ipAddress = ip
+                                session.ipAddress = ip
                             }
                         }
                         Divider()
                         Button("Clear History", role: .destructive) {
-                            viewModel.ipAddressHistory = []
+                            session.ipAddressHistory = []
                         }
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")

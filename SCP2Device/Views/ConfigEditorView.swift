@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConfigEditorView: View {
-    @Bindable var viewModel: InstallViewModel
+    @Bindable var viewModel: ConfigEditorViewModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingSnippet: ConfigSnippet?
@@ -48,7 +48,7 @@ struct ConfigEditorView: View {
             Label("Edit /opt/aamp.cfg", systemImage: "doc.badge.gearshape")
                 .font(.headline)
             Spacer()
-            Text(viewModel.ipAddress.isEmpty ? "No device IP" : "root@\(viewModel.ipAddress)")
+            Text(viewModel.deviceIP.isEmpty ? "No device IP" : "root@\(viewModel.deviceIP)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
