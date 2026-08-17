@@ -63,6 +63,47 @@ struct SCPProgressParsingTests {
     }
 }
 
+// MARK: - SCP Progress False Positives (item 2)
+
+@Suite("SCP Progress False Positives")
+struct SCPProgressFalsePositiveTests {
+
+    @Test("IP:port lines are not read as progress")
+    func ipPortIsNotProgress() {
+        // Colon present, but no percentage -> not progress.
+        #expect(SCPService.parseProgress(from: "Connecting to 10.0.0.5:10022") == nil)
+    }
+
+    @Test("scp error lines are not read as progress")
+    func scpErrorIsNotProgress() {
+        #expect(SCPService.parseProgress(from: "scp: /tmp/build.bin: Operation not permitted") == nil)
+    }
+
+    @Test("ssh debug lines are not read as progress")
+    func sshDebugIsNotProgress() {
+        #expect(SCPService.parseProgress(from: "debug1: reading configuration data") == nil)
+    }
+
+    @Test("A plain IP address is not read as progress")
+    func plainIPIsNotProgress() {
+        // No colon and no percentage.
+        #expect(SCPService.parseProgress(from: "192.168.1.100") == nil)
+    }
+
+    @Test("Out-of-range percentages are rejected even with a colon")
+    func outOfRangePercentRejected() {
+        #expect(SCPService.parseProgress(from: "processing 255%: nearly there") == nil)
+        #expect(SCPService.parseProgress(from: "value 999%  0:00:01") == nil)
+    }
+
+    @Test("A filename containing digits does not confuse the parser")
+    func filenameDigitsDoNotConfuse() {
+        // "1percent.bin" has leading digits but the real percentage is 3%.
+        let line = "1percent.bin   10MB   3%   1.0MB/s   0:00:01"
+        #expect(SCPService.parseProgress(from: line) == 3)
+    }
+}
+
 // MARK: - SSH Command Construction
 
 @Suite("SSH Command Construction")

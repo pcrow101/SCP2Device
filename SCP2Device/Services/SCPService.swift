@@ -2,7 +2,12 @@ import Foundation
 
 /// Wraps `scp` run inside `script -q /dev/null` so scp sees a TTY and emits
 /// progress lines. Everything arrives on one stdout pipe, split on \r / \n.
-struct SCPService: Sendable {
+struct SCPService: SCPServicing {
+
+    /// Explicitly nonisolated so it can be used as a default argument value
+    /// (default arguments are evaluated in a nonisolated context, and the
+    /// project builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`).
+    nonisolated init() {}
 
     @discardableResult
     func transfer(
@@ -11,7 +16,7 @@ struct SCPService: Sendable {
         destinationFolder: String,
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
         onProgress: @MainActor @escaping @Sendable (Double?) -> Void,
-        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void = { _ in }
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void
     ) async throws -> Int32 {
 
         // Build the scp argument list (will be passed to script)

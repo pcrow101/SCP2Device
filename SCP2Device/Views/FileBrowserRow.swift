@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// Also accepts files dropped anywhere onto the row (via an AppKit drop catcher
 /// overlay because SwiftUI's `.onDrop` is unreliable on macOS 26).
 struct FileBrowserRow: View {
-    @Bindable var viewModel: InstallViewModel
+    @Bindable var session: DeviceSession
     @State private var isTargeted = false
 
     var body: some View {
@@ -17,12 +17,12 @@ struct FileBrowserRow: View {
                         Image(systemName: "arrow.down.circle.fill")
                             .foregroundStyle(Color.accentColor)
                     }
-                    Text(viewModel.buildPath.isEmpty
+                    Text(session.buildPath.isEmpty
                          ? "No file selected  —  drag a file here or use Browse…"
-                         : viewModel.buildPath)
+                         : session.buildPath)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .foregroundStyle(viewModel.buildPath.isEmpty ? .secondary : .primary)
+                        .foregroundStyle(session.buildPath.isEmpty ? .secondary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -46,16 +46,16 @@ struct FileBrowserRow: View {
                 // AppKit drop catcher — reliable on macOS 26.
                 .overlay(
                     FileDropCatcher(isTargeted: $isTargeted) { url in
-                        applyDroppedURL(url)
+                        session.setBuildPath(from: url)
                     }
                 )
 
                 // History menu
-                if !viewModel.buildPathHistory.isEmpty {
+                if !session.buildPathHistory.isEmpty {
                     Menu {
-                        ForEach(viewModel.buildPathHistory, id: \.self) { path in
+                        ForEach(session.buildPathHistory, id: \.self) { path in
                             Button {
-                                viewModel.buildPath = path
+                                session.buildPath = path
                             } label: {
                                 Text((path as NSString).lastPathComponent)
                                     .help(path)
@@ -63,7 +63,7 @@ struct FileBrowserRow: View {
                         }
                         Divider()
                         Button("Clear History", role: .destructive) {
-                            viewModel.buildPathHistory = []
+                            session.buildPathHistory = []
                         }
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
@@ -80,18 +80,6 @@ struct FileBrowserRow: View {
         }
     }
 
-    private func applyDroppedURL(_ url: URL) {
-        let path = url.isFileURL ? url.path : url.absoluteString
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
-        guard exists, !isDir.boolValue else {
-            viewModel.appendLog("⚠ Drop ignored: not an existing file (\(path)).\n")
-            return
-        }
-        viewModel.buildPath = path
-        viewModel.appendLog("✔ Build file set via drop: \(path)\n")
-    }
-
     private func chooseFile() {
         let panel = NSOpenPanel()
         panel.title = "Select Build Image"
@@ -99,13 +87,13 @@ struct FileBrowserRow: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
 
-        if !viewModel.buildPath.isEmpty {
-            panel.directoryURL = URL(fileURLWithPath: viewModel.buildPath)
+        if !session.buildPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: session.buildPath)
                 .deletingLastPathComponent()
         }
 
         if panel.runModal() == .OK, let url = panel.url {
-            viewModel.buildPath = url.path
+            session.buildPath = url.path
         }
     }
 }

@@ -2,7 +2,12 @@ import Foundation
 
 /// Wraps the system `ssh` command executed via `Foundation.Process`.
 /// Streams stdout / stderr output through an async callback.
-struct SSHService: Sendable {
+struct SSHService: SSHServicing {
+
+    /// Explicitly nonisolated so it can be used as a default argument value
+    /// (default arguments are evaluated in a nonisolated context, and the
+    /// project builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`).
+    nonisolated init() {}
 
     /// Executes a remote command over SSH.
     /// Always uses: port 10022, ConnectTimeout=5, StrictHostKeyChecking=no,
@@ -13,10 +18,10 @@ struct SSHService: Sendable {
     func execute(
         deviceIP: String,
         command: String,
-        stdin: String? = nil,
+        stdin: String?,
         onOutput: @MainActor @escaping @Sendable (String) -> Void,
-        onError: (@MainActor @Sendable (String) -> Void)? = nil,
-        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void = { _ in }
+        onError: (@MainActor @Sendable (String) -> Void)?,
+        onProcessStarted: @MainActor @escaping @Sendable (Process) -> Void
     ) async throws -> Int32 {
 
         let arguments: [String] = [
